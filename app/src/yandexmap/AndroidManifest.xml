@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Yandex MapKit Full requires Android 8.0+ (API 26). Other map flavors stay on 23. -->
+    <uses-sdk android:minSdkVersion="26" />
+
+    <application>
+        <service android:name=".carapp.maps.MapAppService" android:exported="false">
+            <intent-filter>
+                <action android:name="me.hufman.androidautoidrive.carconnection.service" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

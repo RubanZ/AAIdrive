@@ -19,3 +19,4 @@ sentry.properties
 _site
 .sass-cache
 spotify-app-remote/build
+.planning/

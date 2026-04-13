@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="lbl_yandex_invalid_apikey">The Yandex MapKit API Key is invalid and map functionality will be reduced. Please notify the developer of this bug and watch for an update</string>
+</resources>

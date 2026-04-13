@@ -1,0 +1,101 @@
+package me.hufman.androidautoidrive.carapp.maps
+
+import android.hardware.display.VirtualDisplay
+import android.util.Log
+import io.bimmergestalt.idriveconnectkit.RHMIDimensions
+import io.bimmergestalt.idriveconnectkit.android.CarAppAssetResources
+import me.hufman.androidautoidrive.*
+import me.hufman.androidautoidrive.carapp.CarAppService
+import me.hufman.androidautoidrive.carapp.music.MusicAppMode
+import me.hufman.androidautoidrive.cds.CDSDataProvider
+import me.hufman.androidautoidrive.maps.CdsLocationProvider
+import me.hufman.androidautoidrive.maps.YandexPlaceSearch
+import java.lang.Exception
+
+class MapAppService: CarAppService() {
+	val appSettings = AppSettingsViewer()
+	var mapAppMode: MapAppMode? = null
+	var mapApp: MapApp? = null
+	var mapScreenCapture: VirtualDisplayScreenCapture? = null
+	var virtualDisplay: VirtualDisplay? = null
+	var mapController: YandexMapsController? = null
+	var mapListener: MapsInteractionControllerListener? = null
+
+	override fun shouldStartApp(): Boolean {
+		return appSettings[AppSettings.KEYS.ENABLED_MAPS].toBoolean()
+	}
+
+	override fun onCarStart() {
+		Log.i(MainService.TAG, "Starting Yandex Maps")
+		// Prime MapKit on the same thread it will be used from (main looper).
+		// The guard inside ensureMapKitInitialized keeps this idempotent across reconnects.
+		YandexMapsProjection.ensureMapKitInitialized(applicationContext)
+
+		val cdsData = CDSDataProvider()
+		cdsData.setConnection(CarInformation.cdsData.asConnection(cdsData))
+		val carLocationProvider = CdsLocationProvider(cdsData, false)
+		val mapAppMode = MapAppMode.build(
+				RHMIDimensions.create(carInformation.capabilities),
+				MutableAppSettingsReceiver(this, handler),
+				cdsData,
+				MusicAppMode.TRANSPORT_PORTS.fromPort(iDriveConnectionStatus.port) ?: MusicAppMode.TRANSPORT_PORTS.BT
+		)
+		this.mapAppMode = mapAppMode
+
+		val mapScreenCapture = VirtualDisplayScreenCapture.build(mapAppMode)
+		this.mapScreenCapture = mapScreenCapture
+
+		val virtualDisplay = VirtualDisplayScreenCapture.createVirtualDisplay(
+				applicationContext, mapScreenCapture.imageCapture, 250
+		)
+		this.virtualDisplay = virtualDisplay
+		// Native-resize mode: matches gmap/mapbox for widget-resolution direct rendering.
+		mapScreenCapture.attachVirtualDisplay(virtualDisplay, 250)
+
+		val mapController = YandexMapsController(
+				applicationContext,
+				carLocationProvider,
+				virtualDisplay,
+				MutableAppSettingsReceiver(applicationContext, null /* main thread */),
+				mapAppMode
+		)
+		this.mapController = mapController
+
+		val mapPlaceSearch = YandexPlaceSearch.getInstance(this, carLocationProvider)
+		val mapListener = MapsInteractionControllerListener(applicationContext, mapController)
+		mapListener.onCreate()
+		this.mapListener = mapListener
+
+		val mapApp = MapApp(
+				iDriveConnectionStatus, securityAccess,
+				CarAppAssetResources(applicationContext, "smartthings"),
+				mapAppMode, carLocationProvider,
+				MapInteractionControllerIntent(applicationContext), mapPlaceSearch, mapScreenCapture
+		)
+		this.mapApp = mapApp
+		val handler = this.handler!!
+		mapApp.onCreate(handler)
+	}
+
+	override fun onCarStop() {
+		mapAppMode?.currentNavDestination = null
+
+		try {
+			mapScreenCapture?.onDestroy()
+			virtualDisplay?.release()
+			mapListener?.onDestroy()
+			mapApp?.onDestroy()
+
+			mapScreenCapture = null
+			virtualDisplay = null
+			mapController = null
+			mapListener = null
+		} catch (e: Exception) {
+			Log.w(TAG, "Encountered an exception while shutting down Yandex Maps", e)
+		}
+
+		mapApp?.onDestroy()
+		mapApp?.disconnect()
+		mapApp = null
+	}
+}

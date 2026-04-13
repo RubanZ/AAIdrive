@@ -169,6 +169,13 @@ android {
             dimension "map"
             buildConfigField 'String', "MapboxAccessToken", '"' + (System.env.AndroidAutoIdrive_MapboxAccessToken ? System.env.AndroidAutoIdrive_MapboxAccessToken : AndroidAutoIdrive_MapboxAccessToken) + '"'
         }
+        yandexmap {
+            dimension "map"
+            // Yandex MapKit Full 4.33.x requires Android 8.0+ (API 26). Other
+            // flavors stay on minSdk 23.
+            minSdkVersion 26
+            buildConfigField 'String', "YandexMapKitApiKey", '"' + (System.env.AndroidAutoIdrive_YandexMapKitApiKey ? System.env.AndroidAutoIdrive_YandexMapKitApiKey : AndroidAutoIdrive_YandexMapKitApiKey) + '"'
+        }
         full {
             dimension "storefront"
         }
@@ -228,6 +235,19 @@ android {
             if (variant.name.contains("mapbox")) {
                 tasks.named("assemble${variant.name.capitalize()}").configure {
                     dependsOn 'assertMapboxKey'
+                }
+            }
+        }
+
+        tasks.register("assertYandexMapKitApiKey") { doLast {
+            if ((System.env.AndroidAutoIdrive_YandexMapKitApiKey ? System.env.AndroidAutoIdrive_YandexMapKitApiKey : AndroidAutoIdrive_YandexMapKitApiKey) == "unset") {
+                throw new GradleException("Please configure a Yandex MapKit API key in your gradle.properties\nSee https://bimmergestalt.github.io/AAIdrive/developers")
+            }
+        }}
+        applicationVariants.configureEach { variant ->
+            if (variant.name.contains("yandexmap")) {
+                tasks.named("assemble${variant.name.capitalize()}").configure {
+                    dependsOn 'assertYandexMapKitApiKey'
                 }
             }
         }
@@ -342,6 +362,7 @@ dependencies {
         exclude group: 'com.mapbox.plugin', module: 'maps-viewport'       // we animate the camera manually
         exclude group: 'com.google.android.gms', module: 'play-services-cronet'     // don't need http3 support
     }
+    yandexmapImplementation 'com.yandex.android:maps.mobile:4.17.0-full'
 
     sentryImplementation 'io.sentry:sentry-android:1.7.16'
     sentryImplementation 'org.slf4j:slf4j-nop:1.7.25'

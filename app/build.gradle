@@ -191,7 +191,7 @@ android {
     applicationVariants.configureEach { variant ->
         if (!variant.buildType.isDebuggable() && variant.mergedFlavor.versionCode == 1) {
             def assembleTaskName = "assemble${variant.name.capitalize()}"
-            tasks.named(assembleTaskName).dependsOn(assertGit)
+            tasks.named(assembleTaskName).configure { dependsOn(assertGit) }
         }
     }
 

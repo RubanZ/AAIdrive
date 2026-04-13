@@ -36,6 +36,10 @@ class MapAppService: CarAppService() {
 		this.mapScreenCapture = mapScreenCapture
 		val virtualDisplay = VirtualDisplayScreenCapture.createVirtualDisplay(applicationContext, mapScreenCapture.imageCapture, 250)
 		this.virtualDisplay = virtualDisplay
+		// Opt into native-resize mode: subsequent changeImageSize() calls will resize the
+		// VirtualDisplay and recreate the ImageReader at widget resolution, so Google Maps
+		// renders directly at the target size instead of being CPU-downscaled later.
+		mapScreenCapture.attachVirtualDisplay(virtualDisplay, 250)
 		val mapController = GMapsController(applicationContext, carLocationProvider, virtualDisplay, MutableAppSettingsReceiver(applicationContext, null /* specifically main thread */), mapAppMode)
 		this.mapController = mapController
 		val mapPlaceSearch = GMapsPlaceSearch.getInstance(this, carLocationProvider)

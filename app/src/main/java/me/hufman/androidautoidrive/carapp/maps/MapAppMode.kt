@@ -27,6 +27,9 @@ class DynamicScreenCaptureConfig(val fullDimensions: RHMIDimensions,
 
 	override val maxWidth: Int = fullDimensions.visibleWidth
 	override val maxHeight: Int = fullDimensions.visibleHeight
+	// Tested WebP lossy on a MINI ID5/ID6 head unit on 2026-04-13 — RHMI image widget
+	// rendered a blank tile, so the protocol rejects anything other than JPEG/PNG.
+	// Keep JPEG as the only viable lossy format for this pipeline.
 	override val compressFormat: Bitmap.CompressFormat = Bitmap.CompressFormat.JPEG
 	override val compressQuality: Int
 		get() {

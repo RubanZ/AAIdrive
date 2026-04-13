@@ -24,6 +24,7 @@ import org.junit.Test
 import org.mockito.ArgumentCaptor
 import org.awaitility.Awaitility.await
 import java.io.ByteArrayInputStream
+import java.util.concurrent.Executor
 
 class MapAppTest {
 	val iDriveConnectionStatus = mock<IDriveConnectionStatus>()
@@ -53,6 +54,8 @@ class MapAppTest {
 	val mockMap = mock<VirtualDisplayScreenCapture> {
 		on { compressBitmap(any()) } doReturn ByteArray(4)
 	}
+	// Run the frame encoder inline on the test thread so assertions don't race a worker thread.
+	val syncEncoderExecutor = Executor { it.run() }
 
 	fun setUp() {
 		reset(carAppResources)
@@ -64,7 +67,7 @@ class MapAppTest {
 	fun testAppInit() {
 		val mockServer = MockBMWRemotingServer()
 		IDriveConnection.mockRemotingServer = mockServer
-		val app = MapApp(iDriveConnectionStatus, securityAccess, carAppResources, mapAppMode, locationProvider, mockController, mockPlaceSearch, mockMap)
+		val app = MapApp(iDriveConnectionStatus, securityAccess, carAppResources, mapAppMode, locationProvider, mockController, mockPlaceSearch, mockMap, syncEncoderExecutor)
 		assertEquals(9, app.menuView.state.id)
 		assertEquals(19, app.fullImageView.state.id)
 		assertEquals(132, app.fullImageView.imageComponent.id)
@@ -86,7 +89,7 @@ class MapAppTest {
 	fun testMenuMap() {
 		val mockServer = MockBMWRemotingServer()
 		IDriveConnection.mockRemotingServer = mockServer
-		val app = MapApp(iDriveConnectionStatus, securityAccess, carAppResources, mapAppMode, locationProvider, mockController, mockPlaceSearch, mockMap)
+		val app = MapApp(iDriveConnectionStatus, securityAccess, carAppResources, mapAppMode, locationProvider, mockController, mockPlaceSearch, mockMap, syncEncoderExecutor)
 		val mockClient = IDriveConnection.mockRemotingClient as BMWRemotingClient
 		val mockHandlerRunnable = ArgumentCaptor.forClass(Runnable::class.java)
 		val mockHandler = mock<Handler>()
@@ -129,7 +132,7 @@ class MapAppTest {
 		appSettings[AppSettings.KEYS.MAP_WIDESCREEN] = "false"
 		val mockServer = MockBMWRemotingServer()
 		IDriveConnection.mockRemotingServer = mockServer
-		val app = MapApp(iDriveConnectionStatus, securityAccess, carAppResources, mapAppMode, locationProvider, mockController, mockPlaceSearch, mockMap)
+		val app = MapApp(iDriveConnectionStatus, securityAccess, carAppResources, mapAppMode, locationProvider, mockController, mockPlaceSearch, mockMap, syncEncoderExecutor)
 		val mockClient = IDriveConnection.mockRemotingClient as BMWRemotingClient
 		val mockHandlerRunnable = ArgumentCaptor.forClass(Runnable::class.java)
 		val mockHandler = mock<Handler>()

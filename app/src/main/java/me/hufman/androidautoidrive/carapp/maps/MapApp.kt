@@ -24,13 +24,18 @@ import me.hufman.androidautoidrive.maps.MapPlaceSearch
 import me.hufman.androidautoidrive.maps.MapResult
 import me.hufman.androidautoidrive.utils.removeFirst
 import java.util.*
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import kotlin.collections.ArrayList
 
 const val TAG = "MapView"
 
 class MapApp(iDriveConnectionStatus: IDriveConnectionStatus, securityAccess: SecurityAccess, val carAppAssets: CarAppResources,
              val mapAppMode: MapAppMode, val locationProvider: CarLocationProvider,
-             val interaction: MapInteractionController, val mapPlaceSearch: MapPlaceSearch, val map: VirtualDisplayScreenCapture) {
+             val interaction: MapInteractionController, val mapPlaceSearch: MapPlaceSearch, val map: VirtualDisplayScreenCapture,
+             private val frameEncoderExecutor: Executor = Executors.newSingleThreadExecutor { r ->
+                 Thread(r, "MapFrameEncoder").apply { isDaemon = true }
+             }) {
 
 	val carappListener = CarAppListener()
 	val carConnection: BMWRemotingServer
@@ -48,7 +53,7 @@ class MapApp(iDriveConnectionStatus: IDriveConnectionStatus, securityAccess: Sec
 	var frameUpdater = FrameUpdater(map, object: FrameModeListener {
 		override fun onResume() { interaction.showMap()	}
 		override fun onPause() { interaction.pauseMap() }
-	})
+	}, frameEncoderExecutor)
 
 	init {
 		carConnection = IDriveConnection.getEtchConnection(iDriveConnectionStatus.host ?: "127.0.0.1", iDriveConnectionStatus.port ?: 8003, carappListener)

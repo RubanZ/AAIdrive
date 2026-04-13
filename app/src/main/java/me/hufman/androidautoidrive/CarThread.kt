@@ -38,6 +38,13 @@ class CarThread(name: String, var runnable: () -> (Unit)): Thread(name) {
 		} catch (e: org.apache.etch.util.TimeoutException) {
 			// phone was unplugged during an RPC command
 			Log.i(TAG, "Shutting down thread $name due to Etch TimeoutException")
+		} catch (e: BMWRemoting.SecurityException) {
+			// the car rejected the SAS certificate (expired / mismatched signing oracle / etc).
+			// This is a checked Exception (not a RuntimeException), so without this catch it
+			// would escape every other handler and kill the whole app process — taking down
+			// Map, Notifications, etc. along with it. Swallow it here so each CarAppService
+			// can fail independently.
+			Log.w(TAG, "Shutting down thread $name due to BMWRemoting SecurityException: errorId=${e.errorId} msg=${e.errorMsg}")
 		} catch (e: RuntimeException) {
 			// phone was unplugged during an RPC command
 			Log.i(TAG, "Shutting down thread $name due to RuntimeException: $e", e)

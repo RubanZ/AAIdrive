@@ -19,12 +19,18 @@ Gradle can sometimes get cranky and need fixing, but most Gradle problems can us
 4. (To enable mapbox build) Add two [Mapbox Access Tokens](https://docs.mapbox.com/android/maps/guides/install/#configure-credentials) to `~/.gradle/gradle.properties`:
     - The public token with all the public scopes should be named like so: `AndroidAutoIdrive_MapboxAccessToken=pk.ey...`
     - The secret token with the private `Downloads:Read` scope should be named like so: `AndroidAutoIdrive_MapboxDownloadToken=sk.ey...`
-5. (Optional) Add a [Spotify API Client ID](https://developer.spotify.com/dashboard/) to `~/.gradle/gradle.properties` as a property named `AndroidAutoIdrive_SpotifyApiKey`.
+5. (To enable yandexmap build) Add a [Yandex MapKit API key](https://yandex.com/dev/maps/mapkit/) to `~/.gradle/gradle.properties` as a property named `AndroidAutoIdrive_YandexMapKitApiKey`:
+    - Sign up for a free Yandex Cloud account, create a MapKit Mobile SDK project, and copy the generated API key.
+    - No spaces or quotes are needed around the property value: `AndroidAutoIdrive_YandexMapKitApiKey=12345678-1234-1234-1234-123456789abc`
+    - The free tier covers 25,000 map renders per day and 10,000 search/geocoding requests per day. There is no monthly active user (MAU) cap on the free tier.
+    - The `yandexmap` flavor requires Android 8.0+ (API 26) — other flavors stay on minSdk 23. The Yandex MapKit native libraries (`libmaps-mobile.so`) ship 16 KB-aligned for the Nov 2025 Play Store mandate.
+    - **Routing is unavailable** in this flavor by design. Yandex MapKit Full's free tier ToS does not permit a third-party app to expose turn-by-turn guidance, so navigation calls are no-ops with a warn log. Use `gmap` or `mapbox` if you need routing.
+6. (Optional) Add a [Spotify API Client ID](https://developer.spotify.com/dashboard/) to `~/.gradle/gradle.properties` as a property named `AndroidAutoIdrive_SpotifyApiKey`.
     - If you don't want to set up a Spotify API key, set your Gradle like so: `AndroidAutoIdrive_SpotifyApiKey=unset`
     - The client secret is not needed, and no spaces or quotes are needed around the property value: `AndroidAutoIdrive_SpotifyApiKey=36b6...`
     - It needs the Redirect URI set to `me.hufman.androidautoidrive://spotify_callback`
     - It needs the Android Package Fingerprint to be added, [follow these instructions](https://developer.spotify.com/documentation/android/tutorials/application-fingerprints) to configure that
-6. (Optional) Add a Sentry DSN to `~/.gradle/gradle.properties` as a property named `AndroidAutoIdrive_SentryDsn` to capture crash reports.
+7. (Optional) Add a Sentry DSN to `~/.gradle/gradle.properties` as a property named `AndroidAutoIdrive_SentryDsn` to capture crash reports.
     - No spaces or quotes are needed around the DSN: `AndroidAutoIdrive_SentryDsn=https://e40...@sentry.io/0123...`
 
 These API keys can be set directly in the `gradle.properties` in the repository, but this will add complications when updating the code or submitting pull requests.

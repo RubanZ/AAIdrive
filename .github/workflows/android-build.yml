@@ -16,6 +16,7 @@ env:
   AndroidAutoIdrive_GmapsApiKey: ${{ secrets.ANDROIDAUTOIDRIVE_GMAPSAPIKEY }}
   AndroidAutoIdrive_MapboxAccessToken: ${{ secrets.ANDROIDAUTOIDRIVE_MAPBOXACCESSTOKEN }}
   AndroidAutoIdrive_MapboxDownloadToken: ${{ secrets.ANDROIDAUTOIDRIVE_MAPBOXDOWNLOADTOKEN }}
+  AndroidAutoIdrive_YandexMapKitApiKey: ${{ secrets.ANDROIDAUTOIDRIVE_YANDEXMAPKITAPIKEY }}
 
 jobs:
   unitTest:
@@ -23,13 +24,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        map: [Nomap, Gmap, Mapbox]
+        map: [Nomap, Gmap, Mapbox, Yandexmap]
         analytics: [Nonalytics, Sentry]
         hasSecret:
           - ${{ github.repository == 'BimmerGestalt/AAIdrive' && github.event_name == 'push' }}
-        exclude:  # don't run Mapbox tests if we are in a context that doesn't have the Mapbox secret
+        exclude:  # don't run flavors whose secret isn't present in the current context
           - hasSecret: false
             map: Mapbox   # Mapbox requires secrets to build
+          - hasSecret: false
+            map: Yandexmap   # Yandex MapKit requires a key to build
     steps:
       - name: Checkout the project
         uses: actions/checkout@v4

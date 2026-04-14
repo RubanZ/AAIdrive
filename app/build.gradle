@@ -130,6 +130,15 @@ android {
     bundle {
         language.enableSplit = false
     }
+    // 16 KB page-size compliance for the Nov-2025 Play Store mandate.
+    // Yandex MapKit 4.33.x ships 16 KB-aligned .so files; useLegacyPackaging=false
+    // keeps them uncompressed so the runtime can mmap them directly. No-op for
+    // flavors without native libs (gmap/nomap), so safe at the android{} level.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
     lint {
         abortOnError false
         checkReleaseBuilds false
@@ -142,6 +151,17 @@ android {
                 testLogging {
                     exceptionFormat = 'full'
                 }
+                // JDK 17+ open-options for reflection-heavy tests. Helps
+                // most reflective access patterns; does NOT fully solve the
+                // setFinalStatic(Build.VERSION.SDK_INT, ...) trick used by
+                // NotificationAppTest and PermissionsModelTest — those rely
+                // on writing through `Field` to a static final in java.base
+                // and JDK 17's MethodHandle-based accessor refuses regardless
+                // of --add-opens. Tracked as a known issue; needs migration
+                // to mockito-inline / Robolectric in a follow-up.
+                jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED',
+                        '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED',
+                        '--add-opens=java.base/java.util=ALL-UNNAMED'
             }
         }
     }
@@ -286,6 +306,41 @@ tasks.register('checkDebug') {
     dependsOn(lintDebug, testDebug)
 }
 
+// REL-04: fail the build if Yandex MapKit leaks into a non-yandex flavor
+// runtime classpath. Each map flavor must own its own dependency surface so
+// gmap/mapbox/nomap users never accidentally ship a Yandex .so. Wired into
+// `check` so CI catches accidental cross-flavor `implementation` lines.
+tasks.register('assertNoYandexLeak') {
+    description = 'Fails if com.yandex.* appears in non-yandex runtime classpaths.'
+    group = 'verification'
+    doLast {
+        def offenders = [:]
+        ['gmapNonalyticsFullDebugRuntimeClasspath',
+         'mapboxNonalyticsFullDebugRuntimeClasspath',
+         'nomapNonalyticsFullDebugRuntimeClasspath'].each { cfgName ->
+            def cfg = configurations.findByName(cfgName)
+            if (cfg == null) {
+                return
+            }
+            def yandex = cfg.resolvedConfiguration.lenientConfiguration.allModuleDependencies
+                    .findAll { it.moduleGroup?.startsWith('com.yandex') }
+                    .collect { "${it.moduleGroup}:${it.moduleName}:${it.moduleVersion}" }
+            if (!yandex.isEmpty()) {
+                offenders[cfgName] = yandex
+            }
+        }
+        if (!offenders.isEmpty()) {
+            def msg = new StringBuilder('Yandex MapKit leaked into non-yandex flavor classpaths:\n')
+            offenders.each { cfg, deps ->
+                msg << "  ${cfg}:\n"
+                deps.each { msg << "    - ${it}\n" }
+            }
+            throw new GradleException(msg.toString())
+        }
+    }
+}
+tasks.named('check').configure { dependsOn 'assertNoYandexLeak' }
+
 repositories {
     maven { url 'https://jitpack.io' }
 }
@@ -362,13 +417,19 @@ dependencies {
         exclude group: 'com.mapbox.plugin', module: 'maps-viewport'       // we animate the camera manually
         exclude group: 'com.google.android.gms', module: 'play-services-cronet'     // don't need http3 support
     }
-    yandexmapImplementation 'com.yandex.android:maps.mobile:4.17.0-full'
+    yandexmapImplementation 'com.yandex.android:maps.mobile:4.33.1-full'
 
     sentryImplementation 'io.sentry:sentry-android:1.7.16'
     sentryImplementation 'org.slf4j:slf4j-nop:1.7.25'
 }
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(17)
+        // JDK 21 is required to read the class-file v65 bytecode shipped in
+        // recent Yandex MapKit 4.x releases (and needed for their 16-KB
+        // page-size compliant native .so files). Foojay toolchain resolver
+        // (declared in settings.gradle) auto-downloads it. Bytecode output
+        // stays at Java 8 via the kotlinOptions / compileOptions blocks above,
+        // so Android runtime and minSdk 23 are unaffected.
+        languageVersion = JavaLanguageVersion.of(21)
     }
 }

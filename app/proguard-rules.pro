@@ -75,3 +75,15 @@
 
 # And Spotify SDK
 -dontwarn com.spotify.base.annotations.NotNull
+
+# Yandex MapKit (yandexmap flavor)
+# The native JNI bridge resolves Java classes by name from libmaps-mobile.so;
+# any obfuscation or dead-code stripping inside com.yandex.** causes silent
+# native crashes (UnsatisfiedLinkError / ClassNotFoundException) on first
+# SearchFactory / MapKitFactory call. Same pattern as the com.google.maps.**
+# block above. -dontobfuscate at the top of this file already handles names,
+# but R8's tree-shaker will still strip unreferenced public API surface that
+# the JNI layer expects to find.
+-keep class com.yandex.mapkit.** { *; }
+-keep class com.yandex.runtime.** { *; }
+-dontwarn com.yandex.**

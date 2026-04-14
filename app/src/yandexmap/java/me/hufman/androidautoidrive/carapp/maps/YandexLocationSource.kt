@@ -1,21 +1,73 @@
 package me.hufman.androidautoidrive.carapp.maps
 
-import android.location.Location
+import android.os.SystemClock
+import com.yandex.mapkit.geometry.Point
+import com.yandex.mapkit.location.Location
+import com.yandex.mapkit.location.LocationListener
+import com.yandex.mapkit.location.LocationManager
+import com.yandex.mapkit.location.LocationStatus
+import com.yandex.mapkit.location.SubscriptionSettings
 
 /**
- * Adapter between AAIdrive's `CdsLocationProvider` (phone-side car data) and
- * Yandex MapKit's location subscriber model.
+ * Bridges AAIdrive's `CdsLocationProvider` (car-sourced `android.location.Location`
+ * callbacks) into Yandex MapKit's `LocationManager` contract.
  *
- * Phase 2 stub: stores the last location but has no Yandex-side subscribers.
- * Phase 5 wires this into `MapKitFactory.getInstance().createUserLocationLayer(...)`
- * or the custom `LocationManager`/`LocationListener` contract MapKit exposes.
+ * Wired via `MapKit.setLocationManager(this)` so that any subsequent
+ * `createUserLocationLayer(mapWindow)` uses our CDS-driven updates instead of
+ * Yandex's default Android `FusedLocationProvider`. Semantically equivalent to
+ * how the gmap flavor uses `GoogleMap.setLocationSource(GMapsLocationSource)`.
+ *
+ * Thread discipline: `onLocationUpdate` is called from the controller's main
+ * looper (same thread MapKit was initialised on), so subscribers are invoked
+ * synchronously on the correct thread without extra dispatch.
  */
-class YandexLocationSource {
-	var location: Location? = null
-		private set
+class YandexLocationSource : LocationManager {
+	private val subscribers = mutableListOf<LocationListener>()
+	private var lastLocation: Location? = null
 
-	fun onLocationUpdate(location: Location) {
-		this.location = location
-		// TODO(phase-5): forward to Yandex's UserLocationLayer / LocationManager subscribers
+	override fun subscribeForLocationUpdates(settings: SubscriptionSettings, listener: LocationListener) {
+		synchronized(subscribers) { subscribers += listener }
+		// Replay the last known fix so the puck appears immediately instead of
+		// waiting for the next car tick.
+		lastLocation?.let { listener.onLocationUpdated(it) }
+		listener.onLocationStatusUpdated(LocationStatus.AVAILABLE)
+	}
+
+	override fun requestSingleUpdate(listener: LocationListener) {
+		lastLocation?.let { listener.onLocationUpdated(it) }
+	}
+
+	override fun unsubscribe(listener: LocationListener) {
+		synchronized(subscribers) { subscribers -= listener }
+	}
+
+	override fun suspend() {
+		// CdsLocationProvider owns its own lifecycle; nothing to do here.
+	}
+
+	override fun resume() {
+		// ditto
+	}
+
+	/**
+	 * Called by the controller on every `CdsLocationProvider` callback — translates
+	 * the `android.location.Location` into a Yandex `Location` and broadcasts to
+	 * every current subscriber (typically a single `UserLocationLayer`).
+	 */
+	fun onLocationUpdate(androidLocation: android.location.Location) {
+		val yandexLocation = Location(
+				Point(androidLocation.latitude, androidLocation.longitude),
+				if (androidLocation.hasAccuracy()) androidLocation.accuracy.toDouble() else null,
+				if (androidLocation.hasAltitude()) androidLocation.altitude else null,
+				null,
+				if (androidLocation.hasBearing()) androidLocation.bearing.toDouble() else null,
+				if (androidLocation.hasSpeed()) androidLocation.speed.toDouble() else null,
+				null,
+				androidLocation.time,
+				SystemClock.elapsedRealtime()
+		)
+		this.lastLocation = yandexLocation
+		val snapshot = synchronized(subscribers) { subscribers.toList() }
+		snapshot.forEach { it.onLocationUpdated(yandexLocation) }
 	}
 }

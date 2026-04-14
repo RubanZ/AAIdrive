@@ -6,7 +6,22 @@ import me.hufman.androidautoidrive.*
 import me.hufman.androidautoidrive.maps.YandexKeyValidation
 import me.hufman.androidautoidrive.phoneui.LiveDataHelpers.map
 
-class MapSettingsModel(appContext: Context, carCapabilitiesSummarized: LiveData<CarCapabilitiesSummarized>): ViewModel() {
+/**
+ * Validator seam so unit tests can drive `invalidKey` deterministically
+ * without instantiating `YandexKeyValidation` (which transitively touches
+ * the Yandex SDK on the main looper). The single abstract method matches
+ * `YandexKeyValidation.validateKey()` so production wiring is a one-line
+ * lambda and tests pass a fixed-result lambda.
+ */
+fun interface YandexKeyValidator {
+	suspend fun validateKey(): Boolean?
+}
+
+class MapSettingsModel(
+		appContext: Context,
+		carCapabilitiesSummarized: LiveData<CarCapabilitiesSummarized>,
+		keyValidator: YandexKeyValidator = YandexKeyValidator { YandexKeyValidation(appContext).validateKey() },
+): ViewModel() {
 	class Factory(val appContext: Context): ViewModelProvider.Factory {
 		val carInformation = CarInformationObserver()
 
@@ -42,6 +57,6 @@ class MapSettingsModel(appContext: Context, carCapabilitiesSummarized: LiveData<
 	}
 
 	val invalidKey: LiveData<Boolean?> = liveData {
-		emit(YandexKeyValidation(appContext).validateKey() == false)
+		emit(keyValidator.validateKey() == false)
 	}
 }

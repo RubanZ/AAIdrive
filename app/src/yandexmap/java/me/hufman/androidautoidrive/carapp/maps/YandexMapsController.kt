@@ -60,6 +60,10 @@ class YandexMapsController(
 	private var currentZoom = 15f
 	private val startZoom = 6f
 	private var hasInitializedCamera = false
+	private var lastSettingsTime = 0L
+	// 5 minutes between automatic day/night re-checks, mirrors gmap's interval
+	// (GMapsController.SETTINGS_TIME_INTERVAL = 5 * 60000)
+	private val settingsIntervalMs = 5 * 60_000L
 
 	init {
 		carLocationProvider.callback = { location ->
@@ -112,11 +116,20 @@ class YandexMapsController(
 			currentLocation = location
 			yandexLocationSource.onLocationUpdate(location)
 			initCamera()
+			// Re-apply settings so day/night detection has a coordinate to work with.
+			projection?.applySettings()
+			lastSettingsTime = System.currentTimeMillis()
 			return
 		}
 		currentLocation = location
 		yandexLocationSource.onLocationUpdate(location)
 		updateCamera()
+		// Periodic day/night re-check
+		val now = System.currentTimeMillis()
+		if (now - lastSettingsTime > settingsIntervalMs) {
+			projection?.applySettings()
+			lastSettingsTime = now
+		}
 	}
 
 	private fun initCamera() {

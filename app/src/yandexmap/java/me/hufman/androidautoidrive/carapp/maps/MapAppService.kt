@@ -27,9 +27,10 @@ class MapAppService: CarAppService() {
 
 	override fun onCarStart() {
 		Log.i(MainService.TAG, "Starting Yandex Maps")
-		// Prime MapKit on the same thread it will be used from (main looper).
-		// The guard inside ensureMapKitInitialized keeps this idempotent across reconnects.
-		YandexMapsProjection.ensureMapKitInitialized(applicationContext)
+		// MapKit is already initialized by YandexMapKitInitProvider on the
+		// application main thread during process startup. Calling
+		// MapKitFactory.initialize from CarThread crashes inside libmaps-mobile.so
+		// (PITFALLS C2 / observed data_app_native_crash 2026-04-14 08:22:42).
 
 		val cdsData = CDSDataProvider()
 		cdsData.setConnection(CarInformation.cdsData.asConnection(cdsData))

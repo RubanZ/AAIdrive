@@ -83,8 +83,12 @@ class FrameUpdater(
 		encoderBusy = true
 		encoderExecutor.execute {
 			try {
+				val tStart = System.nanoTime()
 				val imageData = display.compressBitmap(bitmap)
+				val tEncoded = System.nanoTime()
 				sendImageData(imageData)
+				val tSent = System.nanoTime()
+				Log.d(TAG, "frame size=${imageData.size}B encode=${(tEncoded - tStart) / 1_000_000}ms send=${(tSent - tEncoded) / 1_000_000}ms")
 			} catch (t: Throwable) {
 				Log.w(TAG, "Frame encode/send failed: $t")
 			} finally {

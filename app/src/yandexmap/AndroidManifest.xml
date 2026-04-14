@@ -5,6 +5,16 @@
     <uses-sdk android:minSdkVersion="26" />
 
     <application>
+        <!-- ContentProvider-as-init shim: instantiated on the main thread during
+             Application.attach(), guarantees MapKitFactory.initialize runs before
+             any Service/Activity touches MapKit, and on the main looper that
+             Yandex's native code requires. See YandexMapKitInitProvider. -->
+        <provider
+            android:name=".maps.YandexMapKitInitProvider"
+            android:authorities="${applicationId}.yandexmapkit-init"
+            android:exported="false"
+            android:initOrder="100" />
+
         <service android:name=".carapp.maps.MapAppService" android:exported="false">
             <intent-filter>
                 <action android:name="me.hufman.androidautoidrive.carconnection.service" />

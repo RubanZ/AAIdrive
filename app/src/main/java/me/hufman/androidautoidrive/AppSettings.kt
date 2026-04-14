@@ -49,6 +49,7 @@ interface AppSettings {
 		MAP_USE_PHONE_GPS("Map_Use_Phone_GPS", "false", "Use Phone GPS"),
 		NAV_PREFER_CUSTOM_MAP("Nav_Prefer_Custom_Map", "false", "Prefer custom map nav over car nav"),
 		MAP_BUILDINGS("Map_Buildings", "true", "Maps 3D Buildings"),
+		MAP_PUCK_STYLE("Map_Puck_Style", "arrow_blue", "Current-location icon style on the in-car map (yandexmap flavor only — see YandexPuckStyle)"),
 		MAP_TILT("Map_Tilt", "false", "3D tilt and rotate the map"),
 		GMAPS_STYLE("GMaps_Style", "auto", "GMaps style"),
 		MAP_CUSTOM_STYLE("Mapbox_Custom_Style", "", "Mapbox custom style"),

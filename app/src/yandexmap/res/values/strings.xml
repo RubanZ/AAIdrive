@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="lbl_yandex_invalid_apikey">The Yandex MapKit API Key is invalid and map functionality will be reduced. Please notify the developer of this bug and watch for an update</string>
+    <string name="lbl_yandex_puck_style">Current location icon</string>
+    <string name="lbl_yandex_puck_arrow_blue">Blue arrow</string>
+    <string name="lbl_yandex_puck_arrow_red">Red arrow</string>
 </resources>

@@ -54,6 +54,40 @@
             android:paddingBottom="@dimen/settings_vertical_margin"
             android:text="@string/lbl_map_traffic" />
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="@dimen/settings_vertical_margin"
+            android:paddingBottom="4dp"
+            android:textStyle="bold"
+            android:text="@string/lbl_yandex_puck_style" />
+
+        <RadioGroup
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingBottom="@dimen/settings_vertical_margin"
+            app:puckStyleSelection="@={settings.mapPuckStyle}">
+
+            <RadioButton
+                android:id="@+id/puck_arrow_blue"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="48dp"
+                android:drawableStart="@drawable/ic_yandex_puck_arrow_blue"
+                android:drawablePadding="12dp"
+                android:text="@string/lbl_yandex_puck_arrow_blue" />
+
+            <RadioButton
+                android:id="@+id/puck_arrow_red"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="48dp"
+                android:drawableStart="@drawable/ic_yandex_puck_arrow_red"
+                android:drawablePadding="12dp"
+                android:text="@string/lbl_yandex_puck_arrow_red" />
+        </RadioGroup>
+
         <androidx.fragment.app.FragmentContainerView
             android:id="@+id/paneMapQuickDestinations"
             android:visibility="@{settings.mapEnabled}"

@@ -20,6 +20,7 @@ data class YandexMapsSettings(
 		val mapDaytime: Boolean,
 		val mapBuildings: Boolean,
 		val mapTraffic: Boolean,
+		val puckStyle: YandexPuckStyle,
 ) {
 	/**
 	 * Fields that can independently change between two settings snapshots.
@@ -32,6 +33,7 @@ data class YandexMapsSettings(
 		TRAFFIC,
 		BUILDINGS,
 		WIDESCREEN,
+		PUCK_STYLE,
 	}
 
 	companion object {
@@ -42,6 +44,7 @@ data class YandexMapsSettings(
 					mapDaytime = daytime,
 					mapBuildings = appSettings[AppSettings.KEYS.MAP_BUILDINGS].toBoolean(),
 					mapTraffic = appSettings[AppSettings.KEYS.MAP_TRAFFIC].toBoolean(),
+					puckStyle = YandexPuckStyle.fromStorageKey(appSettings[AppSettings.KEYS.MAP_PUCK_STYLE]),
 			)
 		}
 
@@ -66,6 +69,7 @@ data class YandexMapsSettings(
 			if (previous.mapTraffic != desired.mapTraffic) changed += ChangedField.TRAFFIC
 			if (previous.mapBuildings != desired.mapBuildings) changed += ChangedField.BUILDINGS
 			if (previous.mapWidescreen != desired.mapWidescreen) changed += ChangedField.WIDESCREEN
+			if (previous.puckStyle != desired.puckStyle) changed += ChangedField.PUCK_STYLE
 			return changed
 		}
 	}

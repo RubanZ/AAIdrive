@@ -9,7 +9,8 @@ import com.yandex.mapkit.Animation
 import com.yandex.mapkit.geometry.Point
 import com.yandex.mapkit.map.CameraPosition
 import com.yandex.mapkit.map.Map
-import me.hufman.androidautoidrive.AppSettingsObserver
+import me.hufman.androidautoidrive.AppSettings
+import me.hufman.androidautoidrive.MutableAppSettingsObserver
 import me.hufman.androidautoidrive.maps.CarLocationProvider
 import me.hufman.androidautoidrive.maps.LatLong
 import kotlin.math.max
@@ -40,7 +41,7 @@ class YandexMapsController(
 		private val context: Context,
 		private val carLocationProvider: CarLocationProvider,
 		private val virtualDisplay: VirtualDisplay,
-		private val appSettings: AppSettingsObserver,
+		private val appSettings: MutableAppSettingsObserver,
 		private val mapAppMode: MapAppMode
 ) : MapInteractionController {
 
@@ -83,6 +84,25 @@ class YandexMapsController(
 				// onCreate has produced a usable Map — point the camera at the
 				// current (or default) location before the first frame renders.
 				initCamera()
+				// If we already have a CDS fix from a previous showing, push it
+				// straight into the projection so the puck appears on frame 1.
+				yandexLocationSource.latestLatLong()?.let { latLong ->
+					p.updateUserLocation(
+							latLong,
+							yandexLocationSource.latestBearing(),
+							yandexLocationSource.latestAccuracyMeters()
+					)
+				}
+			}
+			// Tap on the puck cycles to the next puck style — the same setting
+			// the phone-side fragment exposes via radio buttons. Persist via
+			// MutableAppSettingsObserver so AppSettingsObserver.callback fires
+			// and applySettings picks up ChangedField.PUCK_STYLE.
+			p.onPuckTapped = {
+				val current = YandexPuckStyle.fromStorageKey(appSettings[AppSettings.KEYS.MAP_PUCK_STYLE])
+				val next = current.next()
+				Log.i(TAG, "Puck tapped — cycling style ${current.storageKey} → ${next.storageKey}")
+				appSettings[AppSettings.KEYS.MAP_PUCK_STYLE] = next.storageKey
 			}
 		}
 		if (projection?.isShowing == false) {
@@ -110,19 +130,26 @@ class YandexMapsController(
 	}
 
 	private fun onLocationUpdate(location: Location) {
-		if (currentLocation == null) {
+		val firstFix = currentLocation == null
+		currentLocation = location
+		yandexLocationSource.onLocationUpdate(location)
+		// Push the puck before camera moves so the projection always renders
+		// consistent state — placemark + viewport in the same place on every
+		// frame, no flicker between the camera fly-in and the first puck draw.
+		projection?.updateUserLocation(
+				LatLong(location.latitude, location.longitude),
+				if (location.hasBearing()) location.bearing else null,
+				if (location.hasAccuracy()) location.accuracy else null
+		)
+		if (firstFix) {
 			// First location fix — initialise the camera before applying updates
 			// so the puck and viewport land in the same place on the first frame.
-			currentLocation = location
-			yandexLocationSource.onLocationUpdate(location)
 			initCamera()
 			// Re-apply settings so day/night detection has a coordinate to work with.
 			projection?.applySettings()
 			lastSettingsTime = System.currentTimeMillis()
 			return
 		}
-		currentLocation = location
-		yandexLocationSource.onLocationUpdate(location)
 		updateCamera()
 		// Periodic day/night re-check
 		val now = System.currentTimeMillis()

@@ -2,18 +2,27 @@ package me.hufman.androidautoidrive.carapp.maps
 
 import android.app.Presentation
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.Drawable
 import android.os.Bundle
 import android.util.Log
 import android.view.Display
 import android.view.WindowManager
+import androidx.appcompat.content.res.AppCompatResources
 import com.yandex.mapkit.MapKitFactory
-import com.yandex.mapkit.geometry.Geometry
+import com.yandex.mapkit.ScreenPoint
+import com.yandex.mapkit.ScreenRect
 import com.yandex.mapkit.geometry.Circle
 import com.yandex.mapkit.geometry.Point
+import com.yandex.mapkit.geometry.Polyline
 import com.yandex.mapkit.map.CircleMapObject
 import com.yandex.mapkit.map.IconStyle
 import com.yandex.mapkit.map.Map
+import com.yandex.mapkit.map.MapObjectCollection
 import com.yandex.mapkit.map.PlacemarkMapObject
+import com.yandex.mapkit.map.PolylineMapObject
+import com.yandex.mapkit.map.RotationType
 import com.yandex.mapkit.mapview.MapView
 import com.yandex.mapkit.traffic.TrafficLayer
 import com.yandex.runtime.image.ImageProvider
@@ -71,6 +80,13 @@ class YandexMapsProjection(
 		// Accuracy circle is below the placemark so the arrow always reads
 		// cleanly even when accuracy is wide.
 		private const val ACCURACY_Z_INDEX = 999f
+		// Route polyline sits above base tiles / traffic but below the puck so
+		// the user's position always reads cleanly against the line.
+		private const val ROUTE_Z_INDEX = 500f
+		// Route stroke width in dp-ish units (Yandex uses "world-pixel" units
+		// that roughly track screen pixels for CanvasItem line objects). Matches
+		// the visual weight of gmap's default PolylineOptions.width.
+		private const val ROUTE_STROKE_WIDTH = 5f
 		// Soft cap on accuracy radius so a degraded fix doesn't paint the
 		// entire viewport blue. Yandex `Circle` takes meters; this is generous.
 		private const val ACCURACY_MAX_METERS = 500.0
@@ -92,6 +108,12 @@ class YandexMapsProjection(
 	// Custom user-location puck (replaces UserLocationLayer — see class kdoc).
 	private var puckPlacemark: PlacemarkMapObject? = null
 	private var accuracyCircle: CircleMapObject? = null
+
+	// Dedicated sub-collection for route-related objects so stopping navigation
+	// can `.clear()` without touching the puck / accuracy circle that live in
+	// the root mapObjects collection.
+	private var routeCollection: MapObjectCollection? = null
+	private var routePolyline: PolylineMapObject? = null
 
 	// Most-recently-applied settings snapshot — used by applySettings to diff
 	// changes so we only poke the SDK when something actually flipped.
@@ -141,6 +163,11 @@ class YandexMapsProjection(
 		// hidden via setVisible(false) until then.
 		val initialPoint = Point(0.0, 0.0)
 		val mapObjects = view.mapWindow.map.mapObjects
+
+		// Route collection is added first so route polylines sit below the
+		// puck in z-order terms. We still explicitly set ROUTE_Z_INDEX on the
+		// polyline to stay robust if the creation order ever shifts.
+		this.routeCollection = mapObjects.addCollection()
 
 		val accuracy = mapObjects.addCircle(Circle(initialPoint, 0f))
 		// Setters land on the CircleMapObject — addCircle() in this MapKit
@@ -207,10 +234,22 @@ class YandexMapsProjection(
 
 		val point = Point(latLong.latitude, latLong.longitude)
 		placemark.geometry = point
-		if (bearingDegrees != null) {
-			placemark.setDirection(bearingDegrees)
+		// Normalize bearing into [0, 360) before passing to Yandex. Raw
+		// CdsLocationProvider bearings can be negative (the provider negates
+		// CDS heading to match Android Location convention — see
+		// CarLocationProvider.kt:114), and while PlacemarkMapObject.setDirection
+		// nominally accepts any float, some Yandex builds do not normalize
+		// negative values and render the icon rotated to the wrong quadrant.
+		val normalizedBearing = bearingDegrees?.let { raw ->
+			val mod = raw.rem(360f)
+			if (mod < 0f) mod + 360f else mod
+		}
+		if (normalizedBearing != null) {
+			placemark.setDirection(normalizedBearing)
 		}
 		placemark.isVisible = true
+
+		Log.d(TAG, "updateUserLocation lat=${"%.6f".format(latLong.latitude)} lon=${"%.6f".format(latLong.longitude)} bearingRaw=$bearingDegrees bearingNorm=$normalizedBearing accuracyM=$accuracyMeters")
 
 		if (accuracyMeters != null && accuracyMeters > 0f) {
 			val clamped = accuracyMeters.toDouble().coerceAtMost(ACCURACY_MAX_METERS)
@@ -219,6 +258,39 @@ class YandexMapsProjection(
 		} else {
 			accuracy.isVisible = false
 		}
+	}
+
+	/**
+	 * Draw (or clear) a route polyline. Called by [YandexMapsController]'s
+	 * `drawNavigation` whenever [YandexMapsNavController] fires its update
+	 * callback — the controller owns the "is there a route?" state, we only
+	 * own the visual.
+	 *
+	 * Passing `null` or an empty list clears the current polyline. Any non-empty
+	 * list replaces the existing polyline (we drop the old one and create a new
+	 * one instead of calling `setGeometry` because Yandex's internal cache has
+	 * historically mishandled large geometry swaps on existing PolylineMapObject
+	 * instances — recreating is simpler and the allocation cost is negligible
+	 * next to the route-request round-trip that preceded it).
+	 *
+	 * Color comes from `R.color.mapRouteLine`, identical to gmap's polyline, so
+	 * the car HMI renders a visually consistent line regardless of backend.
+	 */
+	fun drawRoute(points: List<Point>?) {
+		val collection = this.routeCollection ?: return
+		// Always clear first — simplest correct behaviour for both "new route"
+		// and "stopNavigation" cases. `routePolyline` is invalidated as a side
+		// effect so we can't keep a dangling reference into a cleared parent.
+		collection.clear()
+		routePolyline = null
+		if (points == null || points.size < 2) {
+			return
+		}
+		val polyline = collection.addPolyline(Polyline(points))
+		polyline.setStrokeColor(parentContext.getColor(R.color.mapRouteLine))
+		polyline.strokeWidth = ROUTE_STROKE_WIDTH
+		polyline.zIndex = ROUTE_Z_INDEX
+		this.routePolyline = polyline
 	}
 
 	/**
@@ -257,22 +329,94 @@ class YandexMapsProjection(
 			}
 			map.set2DMode(!desired.mapBuildings)
 		}
-		if (YandexMapsSettings.ChangedField.WIDESCREEN in changed) {
-			// Widescreen padding: Yandex uses a focusRect on the MapWindow.
-			// Phone-in-car HMI already drives fullDimensions via MapAppMode, so
-			// the on/off toggle just resets to null for now. A future pass can
-			// compute a proper ScreenRect from `AppSettings.MAP_WIDESCREEN`
-			// + `mapAppMode` if the car supports the widescreen layout.
-			mapView?.mapWindow?.setFocusRect(null)
+		if (YandexMapsSettings.ChangedField.WIDESCREEN in changed ||
+				YandexMapsSettings.ChangedField.HEADING_UP in changed) {
+			// Yandex uses a MapWindow focusRect to offset where the camera
+			// target lands in window coordinates. In heading-up mode we shove
+			// the focus down to the lower half of the window so the puck sits
+			// at ~75% of screen height — the "what's behind you doesn't matter"
+			// navigator view. Widescreen stays as null (placeholder for a
+			// future padded layout).
+			applyFocusRect(desired.mapHeadingUp)
 		}
 		if (YandexMapsSettings.ChangedField.PUCK_STYLE in changed && placemark != null) {
-			val provider = ImageProvider.fromResource(parentContext, desired.puckStyle.drawableRes)
-			// Anchor (0.5, 0.5) puts the GPS coordinate exactly under the
-			// arrow's pivot — every puck drawable is authored centered.
-			val style = IconStyle().setAnchor(android.graphics.PointF(0.5f, 0.5f))
-			placemark.setIcon(provider, style)
+			// Rasterize the vector drawable manually: ImageProvider.fromResource
+			// calls AndroidBitmap_getInfo on the compiled resource, which
+			// fails with "Error code: -1" for VectorDrawable (observed on
+			// device, 2026-04-14). fromBitmap works with any Drawable source.
+			val bitmap = rasterizePuckDrawable(desired.puckStyle.drawableRes)
+			if (bitmap != null) {
+				val provider = ImageProvider.fromBitmap(bitmap)
+				// Anchor (0.5, 0.5) puts the GPS coordinate exactly under the
+				// arrow's pivot — every puck drawable is authored centered.
+				// RotationType.ROTATE is the ONLY way to make setDirection()
+				// actually rotate the icon — the default is NO_ROTATION, which
+				// silently ignores every direction change (observed 2026-04-14:
+				// bearing=82.97° arrived on every tick but the arrow stayed
+				// pointing north on screen).
+				val style = IconStyle()
+						.setAnchor(android.graphics.PointF(0.5f, 0.5f))
+						.setRotationType(RotationType.ROTATE)
+				placemark.setIcon(provider, style)
+			} else {
+				Log.w(TAG, "Puck rasterization returned null for ${desired.puckStyle.storageKey}; keeping previous icon")
+			}
 		}
 
 		appliedSettings = desired
+	}
+
+	/**
+	 * Rasterize a VectorDrawable resource into a [Bitmap] sized for the puck.
+	 *
+	 * [ImageProvider.fromResource] internally calls `AndroidBitmap_getInfo`
+	 * on the compiled resource entry; for a compiled VectorDrawable this
+	 * returns error code -1 ("not a bitmap"), which the Yandex native layer
+	 * logs as `yandex.maps: AndroidBitmap_getInfo() failed`. Feeding it a
+	 * pre-rasterized Bitmap via [ImageProvider.fromBitmap] sidesteps the
+	 * check entirely.
+	 *
+	 * Size is read from the drawable's own intrinsic bounds (the vector
+	 * author set `48dp x 48dp`). If the drawable fails to inflate (missing
+	 * resource, XML parse error) we return `null` and leave the previous
+	 * icon in place.
+	 */
+	/**
+	 * Move the map's camera target anchor to the lower portion of the window
+	 * when `headingUp` is on, so the user puck sits at ~75% of screen height —
+	 * a navigator-style "look ahead" view where what's behind the car doesn't
+	 * waste pixels. When off, reset to full-window center.
+	 *
+	 * Deferred via [MapView.post] so the first call (from the first-fix
+	 * `applySettings` inside `onLocationUpdate`) still runs after the
+	 * `MapView` has laid out and `mapWindow.width` / `height` are non-zero.
+	 */
+	private fun applyFocusRect(headingUp: Boolean) {
+		val view = mapView ?: return
+		view.post {
+			val window = view.mapWindow
+			val w = window.width()
+			val h = window.height()
+			if (w <= 0 || h <= 0) return@post
+			val rect = if (headingUp) {
+				// Lower half of the window — camera target is placed at the
+				// center of this rect, i.e. (w/2, 0.75*h).
+				ScreenRect(ScreenPoint(0f, h * 0.5f), ScreenPoint(w.toFloat(), h.toFloat()))
+			} else {
+				null
+			}
+			window.focusRect = rect
+		}
+	}
+
+	private fun rasterizePuckDrawable(drawableRes: Int): Bitmap? {
+		val drawable: Drawable = AppCompatResources.getDrawable(parentContext, drawableRes) ?: return null
+		val w = drawable.intrinsicWidth.takeIf { it > 0 } ?: 96
+		val h = drawable.intrinsicHeight.takeIf { it > 0 } ?: 96
+		val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+		val canvas = Canvas(bitmap)
+		drawable.setBounds(0, 0, w, h)
+		drawable.draw(canvas)
+		return bitmap
 	}
 }

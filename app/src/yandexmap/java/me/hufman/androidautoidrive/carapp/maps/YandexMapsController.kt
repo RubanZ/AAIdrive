@@ -26,11 +26,10 @@ import kotlin.math.min
  *  - Relay CDS-sourced location fixes into `YandexLocationSource` (which is installed
  *    as MapKit's process-wide `LocationManager` during `YandexMapsProjection.onCreate`)
  *  - Re-clamp zoom to `[0f..18f]`, mirror gmap's SHUTDOWN_WAIT_INTERVAL of 120_000 ms
- *
- * Routing/TbT is out of scope for this milestone — see `.planning/DECISIONS.md`.
- * The `navigateTo` / `recalcNavigation` / `stopNavigation` overrides warn-log and
- * no-op so the shared `MapInteractionController` contract stays intact without
- * violating Yandex MapKit Full's free-tier ToS prohibition on turn-by-turn.
+ *  - Driving routing via [YandexMapsNavController]: [navigateTo] builds a route
+ *    with the Yandex Directions SDK and the projection draws the polyline.
+ *    Enabled under the project's Commercial-tier license (DAU<1000 free) —
+ *    see `.planning/DECISIONS.md` → "2026-04-15 — Routing unblocked".
  *
  * All MapKit calls are marshalled through a `Handler(context.mainLooper)` instance.
  * This is the same thread `MapKitFactory.initialize` ran on, and is the thread
@@ -51,16 +50,40 @@ class YandexMapsController(
 		// Animation timings mirror gmap (`GMapsController.animateNavigation`):
 		// snappy 500ms camera moves for normal zoom, 4s for nav fly-to.
 		private val SMOOTH_ANIM = Animation(Animation.Type.SMOOTH, 0.5f)
+		// After a manual zoomIn/zoomOut call, suspend speed-adaptive auto-zoom
+		// for this long so the user's explicit choice stays visible. Mirrors
+		// the Google Maps "user override" pattern.
+		private const val MANUAL_ZOOM_OVERRIDE_MS = 20_000L
 	}
 
 	private val handler = Handler(context.mainLooper)
 	private var projection: YandexMapsProjection? = null
 	private val yandexLocationSource = YandexLocationSource()
 
+	// Navigation / routing. The nav controller is lazy because
+	// `DirectionsFactory.getInstance()` touches native code and must run on
+	// the MapKit main thread — the same thread `init {}` runs on when built
+	// from `MapAppService.onCarStart` via the main-looper post in
+	// `MapController.onCarStart`'s handler. We still wrap in a lazy-by-lambda
+	// so any early instantiation path (tests, future call sites) doesn't
+	// trigger a JNI crash before MapKit is initialized.
+	val navController: YandexMapsNavController by lazy {
+		YandexMapsNavController.getInstance(carLocationProvider) {
+			// Route callback fires on the main thread; hop through `handler`
+			// anyway to normalize with the rest of the controller's reentrancy
+			// model and play nice with unit tests that swap the looper.
+			handler.post { drawNavigation() }
+			mapAppMode.currentNavDestination = it.currentNavDestination
+		}
+	}
+
 	private var currentLocation: Location? = null
 	private var currentZoom = 15f
 	private val startZoom = 6f
 	private var hasInitializedCamera = false
+	// Epoch ms after which speed-adaptive auto-zoom resumes. Bumped on every
+	// manual zoomIn/zoomOut so the user's pinch stays respected.
+	private var manualZoomUntilMs = 0L
 	private var lastSettingsTime = 0L
 	// 5 minutes between automatic day/night re-checks, mirrors gmap's interval
 	// (GMapsController.SETTINGS_TIME_INTERVAL = 5 * 60000)
@@ -93,6 +116,11 @@ class YandexMapsController(
 							yandexLocationSource.latestAccuracyMeters()
 					)
 				}
+				// Restore the route polyline if navigation is still active from
+				// a previous showing — matches gmap's `drawNavigation()` call in
+				// its `mapListener` for the same "projection was torn down during
+				// idle, user came back, keep their route visible" case.
+				drawNavigation()
 			}
 			// Tap on the puck cycles to the next puck style — the same setting
 			// the phone-side fragment exposes via radio buttons. Persist via
@@ -133,6 +161,12 @@ class YandexMapsController(
 		val firstFix = currentLocation == null
 		currentLocation = location
 		yandexLocationSource.onLocationUpdate(location)
+		// Feed speed to MapAppMode's motion-adaptive capture config. FrameUpdater
+		// polls captureScale each tick and rebuilds the ImageReader smaller
+		// when we're moving, so the JPEG pipeline can keep up with the framerate.
+		mapAppMode.updateMotionSpeed(
+				if (location.hasSpeed()) location.speed * 3.6f else null
+		)
 		// Push the puck before camera moves so the projection always renders
 		// consistent state — placemark + viewport in the same place on every
 		// frame, no flicker between the camera fly-in and the first puck draw.
@@ -164,9 +198,10 @@ class YandexMapsController(
 		val map = projection?.map ?: return
 		val loc = currentLocation
 		val target = if (loc != null) Point(loc.latitude, loc.longitude) else map.cameraPosition.target
+		val (azimuth, tilt) = cameraAzimuthAndTilt(loc)
 		mapAppMode.startInteraction()
 		map.move(
-				CameraPosition(target, startZoom, 0f, 0f),
+				CameraPosition(target, startZoom, azimuth, tilt),
 				SMOOTH_ANIM,
 				null
 		)
@@ -177,17 +212,78 @@ class YandexMapsController(
 		val map = projection?.map ?: return
 		val loc = currentLocation ?: return
 		val target = Point(loc.latitude, loc.longitude)
+		val (azimuth, tilt) = cameraAzimuthAndTilt(loc)
+		currentZoom = autoZoom(loc, currentZoom)
 		map.move(
-				CameraPosition(target, currentZoom, 0f, 0f),
+				CameraPosition(target, currentZoom, azimuth, tilt),
 				SMOOTH_ANIM,
 				null
 		)
+	}
+
+	/**
+	 * Speed-adaptive zoom in heading-up mode. Returns the current zoom
+	 * unchanged unless:
+	 *  - `MAP_TILT` is on (navigator mode),
+	 *  - the location reports a speed (`hasSpeed`),
+	 *  - the user hasn't manually zoomed in the last [MANUAL_ZOOM_OVERRIDE_MS].
+	 *
+	 * Uses a piecewise table with built-in hysteresis so the map doesn't
+	 * oscillate when the speed hovers around a band edge (GPS noise of a few
+	 * km/h is common). Each band has a wider "stay here" region than its
+	 * neighbours' "enter here" threshold.
+	 */
+	private fun autoZoom(loc: Location, current: Float): Float {
+		val enabled = appSettings[AppSettings.KEYS.MAP_TILT].toBoolean()
+		if (!enabled || !loc.hasSpeed()) return current
+		if (System.currentTimeMillis() < manualZoomUntilMs) return current
+		val speedKmh = loc.speed * 3.6f
+		val rounded = current.toInt()
+		return when {
+			rounded >= 17 -> if (speedKmh > 12f) 16f else 17f
+			rounded == 16 -> when {
+				speedKmh > 32f -> 15f
+				speedKmh < 8f  -> 17f
+				else           -> 16f
+			}
+			rounded == 15 -> when {
+				speedKmh > 62f -> 14f
+				speedKmh < 28f -> 16f
+				else           -> 15f
+			}
+			rounded == 14 -> when {
+				speedKmh > 92f -> 13f
+				speedKmh < 58f -> 15f
+				else           -> 14f
+			}
+			else          -> if (speedKmh < 88f) 14f else 13f
+		}
+	}
+
+	// Heading-up camera mode. When MAP_TILT is enabled and we have a live
+	// bearing, rotate the map so the direction of travel is at the top of the
+	// screen (and add a small 3D tilt for the "navigator" feel). The puck's
+	// `setDirection(bearing)` stays as-is — with RotationType.ROTATE the icon's
+	// on-screen rotation is `direction - azimuth`, so setting both to `bearing`
+	// freezes the arrow pointing straight up while the map rotates under it.
+	private fun cameraAzimuthAndTilt(loc: Location?): Pair<Float, Float> {
+		val headingUp = appSettings[AppSettings.KEYS.MAP_TILT].toBoolean()
+		if (!headingUp || loc == null || !loc.hasBearing()) {
+			return 0f to 0f
+		}
+		return normalizeBearing(loc.bearing) to 35f
+	}
+
+	private fun normalizeBearing(raw: Float): Float {
+		val mod = raw.rem(360f)
+		return if (mod < 0f) mod + 360f else mod
 	}
 
 	override fun zoomIn(steps: Int) {
 		Log.i(TAG, "Zooming map in $steps steps")
 		mapAppMode.startInteraction()
 		currentZoom = min(18f, currentZoom + steps)
+		manualZoomUntilMs = System.currentTimeMillis() + MANUAL_ZOOM_OVERRIDE_MS
 		updateCamera()
 	}
 
@@ -195,22 +291,45 @@ class YandexMapsController(
 		Log.i(TAG, "Zooming map out $steps steps")
 		mapAppMode.startInteraction()
 		currentZoom = max(0f, currentZoom - steps)
+		manualZoomUntilMs = System.currentTimeMillis() + MANUAL_ZOOM_OVERRIDE_MS
 		updateCamera()
 	}
 
 	// -----------------------------------------------------------------------------------
-	// Routing stubs — deliberately no-op (see .planning/DECISIONS.md for the rationale).
+	// Routing — enabled under Commercial tier (DAU<1000). See .planning/DECISIONS.md
+	// "2026-04-15 — Routing unblocked under Commercial tier" for the licensing rationale.
+	// Mirrors GMapsController.navigateTo / drawNavigation / recalcNavigation / stopNavigation.
 	// -----------------------------------------------------------------------------------
 
 	override fun navigateTo(dest: LatLong) {
-		Log.w(TAG, "Routing not available on the yandexmap flavor: ignoring navigateTo($dest)")
+		Log.i(TAG, "Beginning Yandex navigation to $dest")
+		mapAppMode.startInteraction()
+		// Clear any stale route drawing immediately so the user doesn't briefly
+		// see the previous polyline while the new route is being computed.
+		projection?.drawRoute(null)
+		navController.navigateTo(dest)
 	}
 
 	override fun recalcNavigation() {
-		Log.w(TAG, "Routing not available on the yandexmap flavor: ignoring recalcNavigation()")
+		navController.currentNavDestination?.let { dest ->
+			Log.i(TAG, "Recalculating Yandex navigation to $dest")
+			navController.navigateTo(dest)
+		}
 	}
 
 	override fun stopNavigation() {
-		Log.w(TAG, "Routing not available on the yandexmap flavor: ignoring stopNavigation()")
+		Log.i(TAG, "Stopping Yandex navigation")
+		navController.stopNavigation()
+	}
+
+	/**
+	 * Drawn in response to [YandexMapsNavController]'s callback. Reads the
+	 * current route (or null) off the nav controller and pushes it into the
+	 * projection. Mirrors `GMapsController.drawNavigation` — same pattern, the
+	 * callback is the single source of truth for "what's currently drawn".
+	 */
+	private fun drawNavigation() {
+		val route = navController.currentNavRoute
+		projection?.drawRoute(route)
 	}
 }

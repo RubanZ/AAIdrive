@@ -20,6 +20,7 @@ data class YandexMapsSettings(
 		val mapDaytime: Boolean,
 		val mapBuildings: Boolean,
 		val mapTraffic: Boolean,
+		val mapHeadingUp: Boolean,
 		val puckStyle: YandexPuckStyle,
 ) {
 	/**
@@ -33,6 +34,7 @@ data class YandexMapsSettings(
 		TRAFFIC,
 		BUILDINGS,
 		WIDESCREEN,
+		HEADING_UP,
 		PUCK_STYLE,
 	}
 
@@ -44,6 +46,7 @@ data class YandexMapsSettings(
 					mapDaytime = daytime,
 					mapBuildings = appSettings[AppSettings.KEYS.MAP_BUILDINGS].toBoolean(),
 					mapTraffic = appSettings[AppSettings.KEYS.MAP_TRAFFIC].toBoolean(),
+					mapHeadingUp = appSettings[AppSettings.KEYS.MAP_TILT].toBoolean(),
 					puckStyle = YandexPuckStyle.fromStorageKey(appSettings[AppSettings.KEYS.MAP_PUCK_STYLE]),
 			)
 		}
@@ -69,6 +72,7 @@ data class YandexMapsSettings(
 			if (previous.mapTraffic != desired.mapTraffic) changed += ChangedField.TRAFFIC
 			if (previous.mapBuildings != desired.mapBuildings) changed += ChangedField.BUILDINGS
 			if (previous.mapWidescreen != desired.mapWidescreen) changed += ChangedField.WIDESCREEN
+			if (previous.mapHeadingUp != desired.mapHeadingUp) changed += ChangedField.HEADING_UP
 			if (previous.puckStyle != desired.puckStyle) changed += ChangedField.PUCK_STYLE
 			return changed
 		}

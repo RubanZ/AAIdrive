@@ -428,7 +428,6 @@ class MainService: Service() {
 	fun startModuleServices() {
 		// RHMI apps are not supported in J29
 		val j29Services = setOf(
-				"me.hufman.androidautoidrive.carapp.assistant.AssistantAppService",
 				"me.hufman.androidautoidrive.carapp.carinfo.CarInformationDiscoveryService"
 		)
 		val intentService = Intent(ACTION_SERVICE_MODULE)

@@ -112,8 +112,10 @@ class CdsLocationProvider(val cdsData: CDSData, val id4: Boolean): CarLocationPr
 		val position = gpsHeading.tryAsJsonObject("GPSExtendedInfo")
 		val heading = position?.tryAsJsonPrimitive("heading")?.tryAsDouble   // in degrees, needs to be negated for Location usage
 		val headingAdj = if (id4) -1.40625f else -1f
-		val speed = position?.tryAsJsonPrimitive("speed")?.tryAsDouble ?: 0.0  // in kmph
-		val validSpeed = if (speed < 4000) speed else 0
+		val speedRaw = position?.tryAsJsonPrimitive("speed")?.tryAsDouble ?: 0.0
+		val validSpeed = if (speedRaw < 32767 && speedRaw > -32800) {
+			(speedRaw + 32768) * 0.036
+		} else 0.0
 		if (heading != null) {
 			currentHeading = CarHeading(heading.toFloat() * headingAdj, validSpeed.toFloat() / 3.6f)
 			onLocationUpdate()

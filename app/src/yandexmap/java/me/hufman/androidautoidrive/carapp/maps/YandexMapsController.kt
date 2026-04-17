@@ -54,6 +54,14 @@ class YandexMapsController(
 		// for this long so the user's explicit choice stays visible. Mirrors
 		// the Google Maps "user override" pattern.
 		private const val MANUAL_ZOOM_OVERRIDE_MS = 20_000L
+		// Distance-threshold rerouting. When the live puck drifts further than
+		// this from the origin the current route was built from, we rebuild the
+		// route from the new position so the polyline stays anchored "from here
+		// to destination" instead of slowly drifting behind the user. 150 m is
+		// short enough to feel responsive on urban streets (reroutes every ~15 s
+		// at city speed) and long enough to avoid hammering the routing backend
+		// with one request per GPS tick on the highway.
+		private const val REROUTE_MIN_DISTANCE_METERS = 150f
 	}
 
 	private val handler = Handler(context.mainLooper)
@@ -161,9 +169,10 @@ class YandexMapsController(
 		val firstFix = currentLocation == null
 		currentLocation = location
 		yandexLocationSource.onLocationUpdate(location)
-		// Feed speed to MapAppMode's motion-adaptive capture config. FrameUpdater
-		// polls captureScale each tick and rebuilds the ImageReader smaller
-		// when we're moving, so the JPEG pipeline can keep up with the framerate.
+		// Feed speed to MapAppMode's motion-adaptive capture config so
+		// compressQuality sheds JPEG bits when we're moving, letting the
+		// encode/send loop keep up with the framerate without resizing the
+		// producer Surface.
 		mapAppMode.updateMotionSpeed(
 				if (location.hasSpeed()) location.speed * 3.6f else null
 		)
@@ -182,14 +191,57 @@ class YandexMapsController(
 			// Re-apply settings so day/night detection has a coordinate to work with.
 			projection?.applySettings()
 			lastSettingsTime = System.currentTimeMillis()
+			// Still run the reroute check on the first fix — it catches the
+			// race where `navigateTo` arrived before any CDS data was flowing
+			// and the nav controller stashed the destination without firing a
+			// request. Now that we have a live location, build the route.
+			maybeReroute(location)
 			return
 		}
 		updateCamera()
+		// After the puck/camera catch up, decide whether the active route is
+		// far enough from the live position that we need to rebuild it. Cheap
+		// no-op when navigation isn't active.
+		maybeReroute(location)
 		// Periodic day/night re-check
 		val now = System.currentTimeMillis()
 		if (now - lastSettingsTime > settingsIntervalMs) {
 			projection?.applySettings()
 			lastSettingsTime = now
+		}
+	}
+
+	/**
+	 * Distance-threshold reroute loop. Runs on every location tick while
+	 * navigation is active; rebuilds the Yandex route when either:
+	 *  - we have a destination but no route yet (first-fix-after-navigate race,
+	 *    or a transient routing error has left us with no polyline), or
+	 *  - the puck has drifted at least [REROUTE_MIN_DISTANCE_METERS] from the
+	 *    origin the current route was built from — so the polyline stays
+	 *    anchored at "from here to dest" instead of slowly trailing behind.
+	 *
+	 * `NavController.navigateTo` is idempotent w.r.t. `currentNavDestination`,
+	 * so calling it repeatedly with the same destination is the right API.
+	 * Each call cancels any in-flight `DrivingSession` before issuing a fresh
+	 * `requestRoutes`, so we never pile up pending requests.
+	 */
+	private fun maybeReroute(location: Location) {
+		val dest = navController.currentNavDestination ?: return
+		val origin = navController.lastRouteOrigin
+		val shouldRebuild = when {
+			origin == null -> true  // destination set but no successful build yet
+			navController.currentNavRoute == null -> true  // last build errored out
+			else -> {
+				val originLocation = Location("reroute").apply {
+					latitude = origin.latitude
+					longitude = origin.longitude
+				}
+				location.distanceTo(originLocation) >= REROUTE_MIN_DISTANCE_METERS
+			}
+		}
+		if (shouldRebuild) {
+			Log.d(TAG, "Rerouting: origin=${navController.lastRouteOrigin} current=(${"%.6f".format(location.latitude)},${"%.6f".format(location.longitude)}) dest=$dest")
+			navController.navigateTo(dest)
 		}
 	}
 
@@ -238,26 +290,20 @@ class YandexMapsController(
 		if (!enabled || !loc.hasSpeed()) return current
 		if (System.currentTimeMillis() < manualZoomUntilMs) return current
 		val speedKmh = loc.speed * 3.6f
+		Log.d(TAG, "autoZoom: loc.speed=${loc.speed} m/s, speedKmh=$speedKmh, currentZoom=$current")
+		// Dead zone: GPS noise can report 1-3 km/h while stationary — don't
+		// change zoom on phantom speed.
+		if (speedKmh < 5f) return current
 		val rounded = current.toInt()
-		return when {
-			rounded >= 17 -> if (speedKmh > 12f) 16f else 17f
+		val result = when {
+			rounded >= 17 -> if (speedKmh > 40f) 16f else 17f
 			rounded == 16 -> when {
-				speedKmh > 32f -> 15f
-				speedKmh < 8f  -> 17f
+				speedKmh > 70f -> 15f
+				speedKmh < 30f -> 17f
 				else           -> 16f
 			}
-			rounded == 15 -> when {
-				speedKmh > 62f -> 14f
-				speedKmh < 28f -> 16f
-				else           -> 15f
-			}
-			rounded == 14 -> when {
-				speedKmh > 92f -> 13f
-				speedKmh < 58f -> 15f
-				else           -> 14f
-			}
-			else          -> if (speedKmh < 88f) 14f else 13f
-		}
+		Log.d(TAG, "autoZoom: result=$result (was $current)")
+		return result
 	}
 
 	// Heading-up camera mode. When MAP_TILT is enabled and we have a live
@@ -306,7 +352,7 @@ class YandexMapsController(
 		mapAppMode.startInteraction()
 		// Clear any stale route drawing immediately so the user doesn't briefly
 		// see the previous polyline while the new route is being computed.
-		projection?.drawRoute(null)
+		projection?.drawRoute(null, null)
 		navController.navigateTo(dest)
 	}
 
@@ -330,6 +376,7 @@ class YandexMapsController(
 	 */
 	private fun drawNavigation() {
 		val route = navController.currentNavRoute
-		projection?.drawRoute(route)
+		val jams = navController.currentNavJams
+		projection?.drawRoute(route, jams)
 	}
 }

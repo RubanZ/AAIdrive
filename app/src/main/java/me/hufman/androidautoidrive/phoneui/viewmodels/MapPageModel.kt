@@ -17,7 +17,7 @@ class MapPageModel(appContext: Context): ViewModel() {
 	}
 	val mapEnabled = BooleanLiveSetting(appContext, AppSettings.KEYS.ENABLED_MAPS)
 	val testMapSupported
-		get() = BuildConfig.DEBUG && BuildConfig.FLAVOR_map == "mapbox"
+		get() = BuildConfig.FLAVOR_map == "mapbox" || BuildConfig.FLAVOR_map == "yandexmap"
 	val testMapEnabled = BooleanLiveSetting(appContext, AppSettings.KEYS.MAP_TESTING_ENABLED)
 	val mapSettingsShowing = mapEnabled.combine(testMapEnabled) { mapEnabled, testMapEnabled ->
 		mapEnabled || (testMapSupported && testMapEnabled)

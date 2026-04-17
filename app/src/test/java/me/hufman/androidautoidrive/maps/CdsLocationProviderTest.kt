@@ -147,4 +147,85 @@ class CdsLocationProviderTest {
 		assertEquals(32.345678, provider.currentLocation?.latitude)
 		assertEquals(-32.345678, provider.currentLocation?.longitude)
 	}
+
+	@Test
+	fun testSpeedDecoding() {
+		val testCases = listOf(
+			Pair(0.0, 0f),
+			Pair(-32740.0, 1f),
+			Pair(-32490.0, 10f),
+			Pair(-31378.0, 50f),
+			Pair(-29990.0, 100f)
+		)
+
+		testCases.forEach { (rawSpeed, expectedKmh) ->
+			val gpsHeadingWithSpeed = JsonObject().apply {
+				add("GPSExtendedInfo", JsonObject().apply {
+					addProperty("altitude", 65530)
+					addProperty("heading", 144)
+					addProperty("quality", 443)
+					addProperty("speed", rawSpeed)
+				})
+			}
+
+			cdsData.onPropertyChangedEvent(CDS.NAVIGATION.GPSPOSITION, gpsPosition)
+			cdsData.onPropertyChangedEvent(CDS.NAVIGATION.GPSEXTENDEDINFO, gpsHeadingWithSpeed)
+
+			val provider = CdsLocationProvider(cdsData, false)
+			assertNotNull(provider.currentHeading)
+			assertEquals(expectedKmh / 3.6f, provider.currentHeading?.speed, 0.1f)
+		}
+	}
+
+	@Test
+	fun testSpeedDecoding() {
+		val testCases = listOf(
+			Pair(0.0, 0f),
+			Pair(-32740.0, 1f),
+			Pair(-32490.0, 10f),
+			Pair(-31378.0, 50f),
+			Pair(-29990.0, 100f)
+		)
+
+		testCases.forEach { (rawSpeed, expectedKmh) ->
+			val gpsHeadingWithSpeed = JsonObject().apply {
+				add("GPSExtendedInfo", JsonObject().apply {
+					addProperty("altitude", 65530)
+					addProperty("heading", 144)
+					addProperty("quality", 443)
+					addProperty("speed", rawSpeed)
+				})
+			}
+
+			cdsData.onPropertyChangedEvent(CDS.NAVIGATION.GPSPOSITION, gpsPosition)
+			cdsData.onPropertyChangedEvent(CDS.NAVIGATION.GPSEXTENDEDINFO, gpsHeadingWithSpeed)
+
+			val provider = CdsLocationProvider(cdsData, false)
+			assertNotNull(provider.currentHeading)
+			assertEquals(expectedKmh / 3.6f, provider.currentHeading?.speed, 0.1f)
+		}
+	}
+
+	@Test
+	fun testInvalidSpeed() {
+		val invalidSpeeds = listOf(32767.0, 65535.0, -50000.0)
+
+		invalidSpeeds.forEach { rawSpeed ->
+			val gpsHeadingWithSpeed = JsonObject().apply {
+				add("GPSExtendedInfo", JsonObject().apply {
+					addProperty("altitude", 65530)
+					addProperty("heading", 144)
+					addProperty("quality", 443)
+					addProperty("speed", rawSpeed)
+				})
+			}
+
+			cdsData.onPropertyChangedEvent(CDS.NAVIGATION.GPSPOSITION, gpsPosition)
+			cdsData.onPropertyChangedEvent(CDS.NAVIGATION.GPSEXTENDEDINFO, gpsHeadingWithSpeed)
+
+			val provider = CdsLocationProvider(cdsData, false)
+			assertNotNull(provider.currentHeading)
+			assertEquals(0f, provider.currentHeading?.speed)
+		}
+	}
 }

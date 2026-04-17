@@ -7,5 +7,6 @@ object MapToggleSettings {
 			AppSettings.KEYS.MAP_INVERT_SCROLL,
 			AppSettings.KEYS.MAP_BUILDINGS,
 			AppSettings.KEYS.MAP_TRAFFIC,
+			AppSettings.KEYS.MAP_TILT,
 	)
 }

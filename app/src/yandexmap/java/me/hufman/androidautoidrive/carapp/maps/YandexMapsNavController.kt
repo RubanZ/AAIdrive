@@ -11,6 +11,7 @@ import com.yandex.mapkit.directions.driving.DrivingRouterType
 import com.yandex.mapkit.directions.driving.DrivingSession
 import com.yandex.mapkit.directions.driving.VehicleOptions
 import com.yandex.mapkit.geometry.Point
+import com.yandex.mapkit.navigation.JamSegment
 import com.yandex.runtime.Error
 import me.hufman.androidautoidrive.maps.CarLocationProvider
 import me.hufman.androidautoidrive.maps.LatLong
@@ -55,6 +56,22 @@ class YandexMapsNavController(
 		private set
 	var currentNavRoute: List<Point>? = null
 		private set
+	/**
+	 * Per-segment jam classification for [currentNavRoute]. Same length as
+	 * `currentNavRoute.size - 1` when populated (one entry per segment between
+	 * consecutive route points). Empty or all-UNKNOWN when traffic data isn't
+	 * available for the route region. Consumed by [YandexMapsProjection.drawRoute]
+	 * to colour the polyline segment-by-segment via `setStrokeColors`.
+	 */
+	var currentNavJams: List<JamSegment>? = null
+		private set
+	/**
+	 * LatLong from which [currentNavRoute] was last successfully built. The
+	 * controller compares live GPS ticks against this point to decide when
+	 * the route has gone stale enough to rebuild (distance-threshold reroute).
+	 */
+	var lastRouteOrigin: LatLong? = null
+		private set
 
 	private var pendingSession: DrivingSession? = null
 
@@ -64,9 +81,14 @@ class YandexMapsNavController(
 			if (routes.isEmpty()) {
 				Log.w(TAG, "Yandex returned zero routes for destination $currentNavDestination")
 				currentNavRoute = null
+				currentNavJams = null
 			} else {
-				Log.i(TAG, "Received ${routes.size} route(s); using first with ${routes[0].geometry.points.size} points")
-				currentNavRoute = routes[0].geometry.points.toList()
+				val route = routes[0]
+				val pts = route.geometry.points.toList()
+				val jams = runCatching { route.jamSegments }.getOrNull()
+				Log.i(TAG, "Received ${routes.size} route(s); using first with ${pts.size} points, ${jams?.size ?: 0} jam segments")
+				currentNavRoute = pts
+				currentNavJams = jams
 			}
 			callback(this@YandexMapsNavController)
 		}
@@ -74,7 +96,9 @@ class YandexMapsNavController(
 		override fun onDrivingRoutesError(error: Error) {
 			pendingSession = null
 			Log.w(TAG, "Yandex routing error: $error")
-			currentNavRoute = null
+			// Intentionally keep the last-good route + jams on error — a
+			// transient routing failure shouldn't nuke the user's visible
+			// polyline. Only stopNavigation clears it explicitly.
 			callback(this@YandexMapsNavController)
 		}
 	}
@@ -95,11 +119,19 @@ class YandexMapsNavController(
 		pendingSession = null
 		currentNavDestination = null
 		currentNavRoute = null
+		currentNavJams = null
+		lastRouteOrigin = null
 		callback(this)
 	}
 
 	private fun requestRoute(start: LatLong, dest: LatLong) {
 		pendingSession?.cancel()
+		// Record the origin we're building from BEFORE the async request fires —
+		// the controller's distance-threshold reroute loop reads this to decide
+		// whether the next location tick is far enough away to warrant another
+		// round-trip. Recording pre-request (not post-response) collapses races
+		// where a second tick arrives before the first route resolves.
+		lastRouteOrigin = start
 		val points = arrayListOf(
 				RequestPoint(Point(start.latitude, start.longitude), RequestPointType.WAYPOINT, null, null, null),
 				RequestPoint(Point(dest.latitude, dest.longitude), RequestPointType.WAYPOINT, null, null, null)

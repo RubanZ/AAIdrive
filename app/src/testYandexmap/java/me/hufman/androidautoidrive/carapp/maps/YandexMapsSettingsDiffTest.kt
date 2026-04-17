@@ -10,6 +10,7 @@ class YandexMapsSettingsDiffTest {
 			mapDaytime = true,
 			mapBuildings = false,
 			mapTraffic = false,
+			mapHeadingUp = false,
 			puckStyle = YandexPuckStyle.ARROW_BLUE,
 	)
 
@@ -47,6 +48,12 @@ class YandexMapsSettingsDiffTest {
 	fun widescreenFlipIsolated() {
 		val changed = YandexMapsSettings.diff(base, base.copy(mapWidescreen = true))
 		assertEquals(setOf(YandexMapsSettings.ChangedField.WIDESCREEN), changed)
+	}
+
+	@Test
+	fun headingUpFlipIsolated() {
+		val changed = YandexMapsSettings.diff(base, base.copy(mapHeadingUp = true))
+		assertEquals(setOf(YandexMapsSettings.ChangedField.HEADING_UP), changed)
 	}
 
 	@Test

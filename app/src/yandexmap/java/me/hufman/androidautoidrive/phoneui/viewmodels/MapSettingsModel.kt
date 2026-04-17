@@ -45,6 +45,10 @@ class MapSettingsModel(
 	val mapInvertZoom = BooleanLiveSetting(appContext, AppSettings.KEYS.MAP_INVERT_SCROLL)
 	val mapBuildings = BooleanLiveSetting(appContext, AppSettings.KEYS.MAP_BUILDINGS)
 	val mapTraffic = BooleanLiveSetting(appContext, AppSettings.KEYS.MAP_TRAFFIC)
+	// MAP_TILT drives navigator-style heading-up mode: the map rotates to
+	// match GPS bearing, anchors the puck closer to the bottom of the
+	// screen, and enables speed-adaptive auto-zoom in YandexMapsController.
+	val mapTilt = BooleanLiveSetting(appContext, AppSettings.KEYS.MAP_TILT)
 	// MAP_PUCK_STYLE is yandexmap-only — picks one of YandexPuckStyle.values(),
 	// persisted as the storageKey string. Two-way DataBinding from the
 	// fragment's RadioGroup uses the @BindingAdapter in PuckStyleBindingAdapters.kt.

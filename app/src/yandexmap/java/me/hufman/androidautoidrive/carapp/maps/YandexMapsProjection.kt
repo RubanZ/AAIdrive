@@ -24,6 +24,8 @@ import com.yandex.mapkit.map.PlacemarkMapObject
 import com.yandex.mapkit.map.PolylineMapObject
 import com.yandex.mapkit.map.RotationType
 import com.yandex.mapkit.mapview.MapView
+import com.yandex.mapkit.navigation.JamSegment
+import com.yandex.mapkit.navigation.JamType
 import com.yandex.mapkit.traffic.TrafficLayer
 import com.yandex.runtime.image.ImageProvider
 import me.hufman.androidautoidrive.AppSettings
@@ -87,14 +89,59 @@ class YandexMapsProjection(
 		// that roughly track screen pixels for CanvasItem line objects). Matches
 		// the visual weight of gmap's default PolylineOptions.width.
 		private const val ROUTE_STROKE_WIDTH = 5f
+		// Per-segment jam colour palette — mirrors Yandex Navigator's traffic
+		// layer convention so users coming from Yandex Maps / Navigator see the
+		// same meaning (green = free flow, red = heavy jam, purple = blocked).
+		// ARGB ints consumed directly by PolylineMapObject.setStrokeColors.
+		private const val JAM_COLOR_FREE      = 0xFF31C447.toInt() // green
+		private const val JAM_COLOR_LIGHT     = 0xFFFFCC00.toInt() // yellow
+		private const val JAM_COLOR_HARD      = 0xFFE84B3A.toInt() // red-orange
+		private const val JAM_COLOR_VERY_HARD = 0xFFB02020.toInt() // dark red
+		private const val JAM_COLOR_BLOCKED   = 0xFF5C2480.toInt() // purple
 		// Soft cap on accuracy radius so a degraded fix doesn't paint the
 		// entire viewport blue. Yandex `Circle` takes meters; this is generous.
 		private const val ACCURACY_MAX_METERS = 500.0
 
+		// Nav-mode map style applied via Map.setMapStyle on onCreate. MapKit's
+		// styler DSL is tag-based (see Yandex docs "Map styles" — not the
+		// web-renderer `source-layer` format served from core-renderer-tiles).
+		// "If an unknown tag is specified, styles are not applied", so every
+		// tag below is taken from the documented substrate vocabulary.
+		//
+		// Rationale for each hidden group in a driving HUD:
+		//  - `poi`          — covers the entire POI subtree (major_landmark,
+		//                     food_and_drink, shopping, fuel_station, hotel,
+		//                     medical, cemetery, outdoor/park, outdoor/beach,
+		//                     outdoor/parking, etc.). One rule kills all POI
+		//                     icons and text labels.
+		//  - `transit`      — covers transit_location/stop/entrance,
+		//                     transit_line, transit_schema,
+		//                     is_unclassified_transit. Removes bus/tram/metro
+		//                     stops, lines and schematic overlays.
+		//  - `parking`      — covers the parking polygons in `urban_area` and
+		//                     the parking POI subtree. Removes the big 'P'
+		//                     blocks that eat urban real estate.
+		//
+		// NOT hidden (kept deliberately): road*, road_surface, road_marking,
+		// crosswalk, underpass, traffic_light, water, landscape (land,
+		// landcover, vegetation), urban_area (residential, industrial,
+		// sports_ground, park, national_park, beach), terrain, admin,
+		// structure (building, entrance, fence, is_tunnel, is_toll),
+		// geographic_line. setMapStyle is orthogonal to isNightModeEnabled so
+		// day/night still flips independently.
+		private const val NAV_MAP_STYLE_JSON = """
+[
+  {"tags":{"any":["poi"]},"stylers":{"visibility":"off"}},
+  {"tags":{"any":["transit"]},"stylers":{"visibility":"off"}},
+  {"tags":{"any":["parking"]},"stylers":{"visibility":"off"}},
+  {"tags":{"any":["road_marking"]},"stylers":{"color":"#FFFF00FF"}}
+]
+"""
+
 		fun ensureMapKitInitialized(context: Context) {
 			if (INITIALIZED.compareAndSet(false, true)) {
 				MapKitFactory.setApiKey(BuildConfig.YandexMapKitApiKey)
-				MapKitFactory.setLocale("en_US")
+				MapKitFactory.setLocale("ru_RU")
 				MapKitFactory.initialize(context.applicationContext)
 			}
 		}
@@ -118,6 +165,13 @@ class YandexMapsProjection(
 	// Most-recently-applied settings snapshot — used by applySettings to diff
 	// changes so we only poke the SDK when something actually flipped.
 	private var appliedSettings: YandexMapsSettings? = null
+
+	// Latest desired heading-up state. Cached so the layout listener can
+	// re-apply the focus rect whenever the MapView resizes (first layout on
+	// car HU often races ahead of applySettings()'s first post{} callback
+	// — at that point mapWindow.width/height are still zero and the focus
+	// rect is silently skipped).
+	private var desiredHeadingUp: Boolean = false
 
 	/**
 	 * Optional callback fired when the user taps the puck on the map.
@@ -143,6 +197,22 @@ class YandexMapsProjection(
 		val view = findViewById<MapView>(R.id.yandexMapView)
 		this.mapView = view
 		this.map = view.mapWindow.map
+
+		// MapWindow width/height are still 0 at the moment onCreate runs, so
+		// applyFocusRect()'s view.post{} call would see a zero-sized window
+		// and silently bail. The layout listener re-applies the rect as soon
+		// as the view actually has dimensions, and again on every resize
+		// (e.g. widescreen flip).
+		view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+			applyFocusRect(desiredHeadingUp)
+		}
+
+		// Trim POI / indoor / transit / parking clutter via Yandex's styler DSL
+		// before the first frame renders. Logs the boolean return so a typo in
+		// the JSON is visible in logcat (MapKit silently keeps the default
+		// style on parse failure).
+		val styleOk = view.mapWindow.map.setMapStyle(NAV_MAP_STYLE_JSON)
+		Log.i(TAG, "Nav map style applied: ok=$styleOk")
 
 		// Car HMI has no touch: disable every user gesture so stray taps on
 		// adjacent UI can't nudge the map. Mapbox mirrors this via excluded
@@ -261,22 +331,31 @@ class YandexMapsProjection(
 	}
 
 	/**
-	 * Draw (or clear) a route polyline. Called by [YandexMapsController]'s
-	 * `drawNavigation` whenever [YandexMapsNavController] fires its update
-	 * callback — the controller owns the "is there a route?" state, we only
-	 * own the visual.
+	 * Draw (or clear) a route polyline, optionally colouring per-segment
+	 * according to Yandex's live traffic classification ([JamSegment]).
 	 *
-	 * Passing `null` or an empty list clears the current polyline. Any non-empty
-	 * list replaces the existing polyline (we drop the old one and create a new
-	 * one instead of calling `setGeometry` because Yandex's internal cache has
-	 * historically mishandled large geometry swaps on existing PolylineMapObject
-	 * instances — recreating is simpler and the allocation cost is negligible
-	 * next to the route-request round-trip that preceded it).
+	 * Called by [YandexMapsController]'s `drawNavigation` whenever
+	 * [YandexMapsNavController] fires its update callback — the controller owns
+	 * the "is there a route?" state, we only own the visual.
 	 *
-	 * Color comes from `R.color.mapRouteLine`, identical to gmap's polyline, so
-	 * the car HMI renders a visually consistent line regardless of backend.
+	 * Passing `null` or an empty `points` list clears the current polyline. Any
+	 * non-empty list replaces the existing polyline (we drop the old one and
+	 * create a new one instead of calling `setGeometry` because Yandex's internal
+	 * cache has historically mishandled large geometry swaps on existing
+	 * PolylineMapObject instances — recreating is simpler and the allocation
+	 * cost is negligible next to the route-request round-trip that preceded it).
+	 *
+	 * **Colouring:**
+	 *  - If `jams` is null/empty OR every entry is `JamType.UNKNOWN`, we use the
+	 *    solid fallback colour `R.color.mapRouteLine` — gmap parity.
+	 *  - Otherwise we build a `List<Int>` of size `points.size - 1` where each
+	 *    entry maps the corresponding `JamSegment.jamType` through the palette
+	 *    in the companion object, and call `PolylineMapObject.setStrokeColors`.
+	 *  - If `jams.size != points.size - 1` we fall back to the solid colour
+	 *    rather than risk a native-layer index mismatch (defensive — Yandex
+	 *    normally returns one segment per polyline edge).
 	 */
-	fun drawRoute(points: List<Point>?) {
+	fun drawRoute(points: List<Point>?, jams: List<JamSegment>? = null) {
 		val collection = this.routeCollection ?: return
 		// Always clear first — simplest correct behaviour for both "new route"
 		// and "stopNavigation" cases. `routePolyline` is invalidated as a side
@@ -287,10 +366,29 @@ class YandexMapsProjection(
 			return
 		}
 		val polyline = collection.addPolyline(Polyline(points))
-		polyline.setStrokeColor(parentContext.getColor(R.color.mapRouteLine))
 		polyline.strokeWidth = ROUTE_STROKE_WIDTH
 		polyline.zIndex = ROUTE_Z_INDEX
+
+		val expectedJamCount = points.size - 1
+		val hasUsableJams = jams != null
+				&& jams.size == expectedJamCount
+				&& jams.any { it.jamType != JamType.UNKNOWN }
+		if (hasUsableJams && jams != null) {
+			val segmentColors: List<Int> = jams.map { jamColorFor(it.jamType) }
+			polyline.setStrokeColors(segmentColors)
+		} else {
+			polyline.setStrokeColor(parentContext.getColor(R.color.mapRouteLine))
+		}
 		this.routePolyline = polyline
+	}
+
+	private fun jamColorFor(type: JamType): Int = when (type) {
+		JamType.FREE -> JAM_COLOR_FREE
+		JamType.LIGHT -> JAM_COLOR_LIGHT
+		JamType.HARD -> JAM_COLOR_HARD
+		JamType.VERY_HARD -> JAM_COLOR_VERY_HARD
+		JamType.BLOCKED -> JAM_COLOR_BLOCKED
+		JamType.UNKNOWN -> parentContext.getColor(R.color.mapRouteLine)
 	}
 
 	/**
@@ -313,6 +411,11 @@ class YandexMapsProjection(
 		val previous = appliedSettings
 		val changed = YandexMapsSettings.diff(previous, desired)
 
+		// Track the latest heading-up intent even when nothing else changed,
+		// so a layout pass that arrives later (very common on the VirtualDisplay
+		// path) can still pick up the correct focus rect.
+		desiredHeadingUp = desired.mapHeadingUp
+
 		if (changed.isEmpty()) {
 			return
 		}
@@ -332,11 +435,12 @@ class YandexMapsProjection(
 		if (YandexMapsSettings.ChangedField.WIDESCREEN in changed ||
 				YandexMapsSettings.ChangedField.HEADING_UP in changed) {
 			// Yandex uses a MapWindow focusRect to offset where the camera
-			// target lands in window coordinates. In heading-up mode we shove
-			// the focus down to the lower half of the window so the puck sits
-			// at ~75% of screen height — the "what's behind you doesn't matter"
-			// navigator view. Widescreen stays as null (placeholder for a
-			// future padded layout).
+			// target lands in window coordinates. We always push the focus
+			// below screen center so the puck sits in the lower portion of
+			// the window (navigator-style "look ahead"): heading-up pins
+			// it at 75% of height, everything else at 65%. Widescreen
+			// recomputes the same rect (placeholder for a future padded
+			// layout).
 			applyFocusRect(desired.mapHeadingUp)
 		}
 		if (YandexMapsSettings.ChangedField.PUCK_STYLE in changed && placemark != null) {
@@ -383,9 +487,10 @@ class YandexMapsProjection(
 	 */
 	/**
 	 * Move the map's camera target anchor to the lower portion of the window
-	 * when `headingUp` is on, so the user puck sits at ~75% of screen height —
-	 * a navigator-style "look ahead" view where what's behind the car doesn't
-	 * waste pixels. When off, reset to full-window center.
+	 * when heading-up mode is active, so the user puck sits at ~80% of screen
+	 * height — a navigator-style "look ahead" view where what's behind the
+	 * car doesn't waste pixels. In plain follow mode we reset `focusRect` to
+	 * `null` so Yandex uses its default full-window center.
 	 *
 	 * Deferred via [MapView.post] so the first call (from the first-fix
 	 * `applySettings` inside `onLocationUpdate`) still runs after the
@@ -398,10 +503,14 @@ class YandexMapsProjection(
 			val w = window.width()
 			val h = window.height()
 			if (w <= 0 || h <= 0) return@post
+			// Heading-up: anchor at 0.80*h. focusRect center sits at
+			// (0.60*h + 1.00*h) / 2 = 0.80*h. Full width so horizontal
+			// centering is unchanged. Follow mode: null → default center.
 			val rect = if (headingUp) {
-				// Lower half of the window — camera target is placed at the
-				// center of this rect, i.e. (w/2, 0.75*h).
-				ScreenRect(ScreenPoint(0f, h * 0.5f), ScreenPoint(w.toFloat(), h.toFloat()))
+				ScreenRect(
+						ScreenPoint(0f, h * 0.60f),
+						ScreenPoint(w.toFloat(), h.toFloat()),
+				)
 			} else {
 				null
 			}

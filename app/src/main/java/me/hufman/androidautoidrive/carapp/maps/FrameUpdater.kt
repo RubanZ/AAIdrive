@@ -54,6 +54,10 @@ class FrameUpdater(
 	@Volatile
 	private var encoderBusy: Boolean = false
 
+	// Diagnostic: how many times run() skipped a frame because no HMI destination was bound.
+	// Read/written only on the car handler thread, so plain Int is fine.
+	private var droppedNoDestination: Int = 0
+
 	fun start(handler: Handler) {
 		this.handler = handler
 		Log.i(TAG, "Starting FrameUpdater thread with handler $handler")
@@ -73,6 +77,14 @@ class FrameUpdater(
 			schedule(50)
 			return
 		}
+		if (destination == null) {
+			// No HMI widget is currently bound — compressing would feed sendImageData
+			// a frame it would just throw away. Skip the work and wait for showWindow()
+			// to attach a destination; the next producer frame will re-schedule us.
+			droppedNoDestination++
+			schedule(1000)
+			return
+		}
 		val bitmap = display.getFrame()
 		if (bitmap == null) {
 			// Either no new image yet, or the latest image hashes identical to the last one we sent.
@@ -86,9 +98,11 @@ class FrameUpdater(
 				val tStart = System.nanoTime()
 				val imageData = display.compressBitmap(bitmap)
 				val tEncoded = System.nanoTime()
+				val dropped = destination == null
 				sendImageData(imageData)
 				val tSent = System.nanoTime()
-				Log.d(TAG, "frame size=${imageData.size}B encode=${(tEncoded - tStart) / 1_000_000}ms send=${(tSent - tEncoded) / 1_000_000}ms")
+				val dropCount = droppedNoDestination
+				Log.d(TAG, "frame size=${imageData.size}B encode=${(tEncoded - tStart) / 1_000_000}ms send=${(tSent - tEncoded) / 1_000_000}ms dropped=$dropped noDestDrops=$dropCount")
 			} catch (t: Throwable) {
 				Log.w(TAG, "Frame encode/send failed: $t")
 			} finally {
@@ -120,6 +134,7 @@ class FrameUpdater(
 		display.changeImageSize(width, height)
 		modeListener?.onResume()
 	}
+
 	fun hideWindow(destination: RHMIModel) {
 		if (this.destination == destination) {
 			this.destination = null
